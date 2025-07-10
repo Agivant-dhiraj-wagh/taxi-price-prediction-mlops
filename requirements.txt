@@ -1,0 +1,14 @@
+# requirements.txt
+
+# For data manipulation and analysis
+pandas
+pandas-gbq # For reading data from Google BigQuery
+
+# For machine learning model
+scikit-learn
+joblib # For saving/loading scikit-learn models
+
+# For Google Cloud Vertex AI Pipelines
+google-cloud-aiplatform
+kfp # Kubeflow Pipelines SDK
+google-cloud-pipeline-components # Google-specific components for KFP
