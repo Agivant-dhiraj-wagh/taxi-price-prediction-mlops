@@ -1,0 +1,124 @@
+# cloudbuild.yaml
+steps:
+  # Step 1: Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-image'
+    args: [
+      'build',
+      '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:$BUILD_ID',
+      '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:latest',
+      '.'
+    ]
+
+  # Step 2: Push Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-image'
+    args: [
+      'push',
+      'us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:$BUILD_ID'
+    ]
+    waitFor: ['build-image']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-latest'
+    args: [
+      'push',
+      'us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:latest'
+    ]
+    waitFor: ['build-image']
+
+  # Step 3: Create pipeline specification
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'create-pipeline-spec'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        cat > pipeline_spec.json << 'EOF'
+        {
+          "pipelineSpec": {
+            "displayName": "taxi-price-prediction-pipeline",
+            "description": "Automated training pipeline for taxi price prediction",
+            "definition": {
+              "components": {
+                "training-component": {
+                  "executorLabel": "training-executor",
+                  "inputDefinitions": {
+                    "parameters": {
+                      "project_id": {"type": "STRING"},
+                      "dataset_id": {"type": "STRING"},
+                      "table_id": {"type": "STRING"},
+                      "model_name": {"type": "STRING"}
+                    }
+                  },
+                  "outputDefinitions": {
+                    "artifacts": {
+                      "model": {"artifactType": {"schemaTitle": "system.Model"}}
+                    }
+                  }
+                }
+              },
+              "deploymentSpec": {
+                "executors": {
+                  "training-executor": {
+                    "container": {
+                      "image": "us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:$BUILD_ID",
+                      "command": ["python", "train.py"],
+                      "args": [
+                        "--project_id", "{{$.inputs.parameters['project_id']}}",
+                        "--dataset_id", "{{$.inputs.parameters['dataset_id']}}",
+                        "--table_id", "{{$.inputs.parameters['table_id']}}",
+                        "--model_name", "{{$.inputs.parameters['model_name']}}"
+                      ]
+                    }
+                  }
+                }
+              },
+              "root": {
+                "dag": {
+                  "tasks": {
+                    "training-task": {
+                      "componentRef": {"name": "training-component"},
+                      "inputs": {
+                        "parameters": {
+                          "project_id": {"runtimeValue": {"constantValue": {"stringValue": "$PROJECT_ID"}}},
+                          "dataset_id": {"runtimeValue": {"constantValue": {"stringValue": "taxi_data"}}},
+                          "table_id": {"runtimeValue": {"constantValue": {"stringValue": "taxi_trips"}}},
+                          "model_name": {"runtimeValue": {"constantValue": {"stringValue": "taxi-price-model-$BUILD_ID"}}}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        EOF
+    waitFor: ['push-image', 'push-latest']
+
+  # Step 4: Submit Vertex AI Pipeline
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: 'submit-pipeline'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud ai custom-jobs create \
+          --region=us-central1 \
+          --display-name="taxi-price-prediction-training-$BUILD_ID" \
+          --config=pipeline_spec.json
+    waitFor: ['create-pipeline-spec']
+
+# Store images in Artifact Registry
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:$BUILD_ID'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/taxi-price-prediction/taxi-model:latest'
+
+# Build configuration
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+
+# Build timeout
+timeout: 1200s
